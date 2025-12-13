@@ -635,8 +635,8 @@ This implementation was inspired by and built upon:
 
 **Sahil Murmu**
 
-- GitHub: [@yourusername](https://github.com/yourusername)
-- Email: your.email@example.com
+- GitHub: [@WebSieve](https://github.com/WebSieve)
+- Email: msahil2603@gmail.com
 
 ---
 
