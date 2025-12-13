@@ -52,10 +52,6 @@ class RMS_Norm(nn.Module):
 class Rotary_PositionalEmebedding(nn.Module):
     """
     rotary position embedding (rope)
-
-    imagine spinning a wheel - each position on the wheel (token position)
-    gets a unique rotation. this helps the model understand "what comes before what".
-
     """
 
     def __init__(
@@ -73,24 +69,21 @@ class Rotary_PositionalEmebedding(nn.Module):
         self.max_seq_length = max_seq_length
         self.base = base
 
-        # pre-compute the rotation frequencies for efficiency
-        # these determine how fast each dimension rotates
         inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2).float() / head_dim))
         self.register_buffer("inv_freq", inv_freq)
 
-        # pre-compute cos and sin values for all positions
         self._set_cos_sin_cache(max_seq_length)
 
     def _set_cos_sin_cache(self, seq_length: int):
         """pre-compute cosine and sine values for all positions"""
-        # create position indices [0, 1, 2, ..., seq_length-1]
+        # creating position indices [0, 1, 2, ..., seq_length-1]
         position = torch.arange(seq_length).float()
 
-        # calculate frequencies for each position
+        # calculating frequencies for each position
         # outer product: each position × each frequency
         freqs = torch.outer(position, self.inv_freq)
 
-        # duplicate frequencies (for pairs of dimensions)
+        # duplicating frequencies (for pairs of dimensions)
         emb = torch.cat([freqs, freqs], dim=-1)
 
         # pre-compute cos and sin for efficiency
@@ -105,15 +98,15 @@ class Rotary_PositionalEmebedding(nn.Module):
         example: [a, b, c, d] -> [-c, -d, a, b]
         """
         # split the last dimension in half
-        x1 = x[..., : x.shape[-1] // 2]  # first half
-        x2 = x[..., x.shape[-1] // 2 :]  # second half
+        x1 = x[..., : x.shape[-1] // 2]
+        x2 = x[..., x.shape[-1] // 2 :]
 
         # rotate: swap and negate
         return torch.cat([-x2, x1], dim=-1)
 
     def forward(self, query, key, position_ids=None):
         """
-        apply rotary embeddings to query and key tensors
+        appling rotary embeddings to query and key tensors
 
         args:
             query: query tensor (batch, num_heads, seq_len, head_dim)
@@ -125,22 +118,16 @@ class Rotary_PositionalEmebedding(nn.Module):
         """
         seq_len = query.shape[2]
 
-        # get cos and sin values for these positions
         if position_ids is None:
-            # use default sequential positions
             cos = self.cos_cached[:seq_len]
             sin = self.sin_cached[:seq_len]
         else:
             cos = self.cos_cached[position_ids]
             sin = self.sin_cached[position_ids]
 
-        # add dimensions for broadcasting
-        # shape: (1, 1, seq_len, head_dim)
         cos = cos.unsqueeze(0).unsqueeze(0)
         sin = sin.unsqueeze(0).unsqueeze(0)
 
-        # apply rotation using the formula:
-        # x_rotated = x * cos + rotate_half(x) * sin
         query_rotated = (query * cos) + (self.rotate_half(query) * sin)
         key_rotated = (key * cos) + (self.rotate_half(key) * sin)
 
@@ -228,9 +215,9 @@ class Multi_Head_SelfAttention(nn.Module):
         batch_size = hidden_state.shape[0]
 
         # step 1 -> project inputs to query, key, value
-        query = self.query_proj(hidden_state)  # (batch, seq_len, hidden)
-        key = self.key_proj(hidden_state)  # (batch, seq_len, hidden)
-        value = self.value_proj(hidden_state)  # (batch, seq_len, hidden)
+        query = self.query_proj(hidden_state)
+        key = self.key_proj(hidden_state)
+        value = self.value_proj(hidden_state)
 
         # step 2
         # split into multiple heads (batch, heads, seq_len, head_dim)
@@ -247,32 +234,20 @@ class Multi_Head_SelfAttention(nn.Module):
         # QK^T: (batch, heads, seq_len, head_dim) @ (batch, heads, head_dim, seq_len)
         # result: (batch, heads, seq_len, seq_len) - attention scores
         attention_scores = torch.matmul(query_layer, key_layer.transpose(-2, -1))
-        # scale down attention scores (prevents softmax saturation)
+        # scaling down attention scores (prevents softmax saturation)
         attention_scores = attention_scores / self.scale
 
-        # step 5: apply attention mask if provided
-        # mask out padding tokens or future tokens (in decoder)
+        # applying attention mask if provided
+        # masking out padding tokens or future tokens (in decoder)
         if attention_mask is not None:
-            # add very negative number to masked positions
+            # adding very negative number to masked positions
             # after softmax, these become ~0
             attention_scores = attention_scores + attention_mask
 
-        # convert the scores to probabilities using softmax
         attention_probs = f.softmax(attention_scores, dim=-1)
-
-        # step 7: apply attention to values
-        # multiply attention probabilities by values to get weighted sum
-        # (batch, heads, seq_len, seq_len) @ (batch, heads, seq_len, head_dim)
-        # result: (batch, heads, seq_len, head_dim)
         context_layer = torch.matmul(attention_probs, value_layer)
-
-        # step 8: combine all heads back together
         context_layer = self.combine_heads(context_layer, batch_size)
-
-        # step 9: final Linear projection
         output = self.output_proj(context_layer)
-
-        # apply dropout before returning
         output = self.output_dropout(output)
 
         return output
@@ -294,19 +269,9 @@ class SwiGLU_Feed_Forward(nn.Module):
         self.intermediate_dim = intermediate_dim
         self.dropout_rate = dropout_rate
 
-        # First step is expansion : projection to intermediate state
-        # This creates richer representation with more capacity.
         self.gate_projection = nn.Linear(embed_dim, intermediate_dim, bias=False)
-
-        # Second expansion : parallel path for gating
-        # Decides what information to let through.
         self.up_projection = nn.Linear(embed_dim, intermediate_dim, bias=False)
-
-        # Down projection : compress back to embed_dim
-        # Integrates all the processed information.
         self.down_projection = nn.Linear(intermediate_dim, embed_dim, bias=False)
-
-        # Dropout for regularization
         self.dropout = nn.Dropout(dropout_rate)
 
     def forward(self, hidden_state):
@@ -318,13 +283,8 @@ class SwiGLU_Feed_Forward(nn.Module):
             output : (batch_size, seq_len, embed_dim)
         """
 
-        # Expanding to intermediate size of applying silu activation (x * sigmoid(x))
         gate = f.silu(self.gate_projection(hidden_state))
         up = self.up_projection(hidden_state)
-
-        # Step 3: Element-wise multiplication (gating)
-        # The gate controls how much of 'up' passes through
-        # This is the GLU (Gated Linear Unit) part
         gated = gate * up
 
         # Projecting back down to embed_dim
