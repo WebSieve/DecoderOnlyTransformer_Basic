@@ -4,7 +4,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"generating on : {device}")
-model_name = "gpt2-xl"
+model_name = "gpt2"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 print("initialized the tokenizer...")
 model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
