@@ -19,26 +19,9 @@ class RMS_Norm(nn.Module):
     def forward(self, hidden_states):
         """
         args :
-
             hidden_states : input tensor of shape (batch_size, sequence_len, embed_dim)
 
-            initial values of x = [3, 4, 5]
-
-            # step 1: square each value
-            x² = [9, 16, 25]
-
-            # step 2: calculate mean
-            mean = (9 + 16 + 25) / 3 = 50/3 ≈ 16.67
-
-            # step 3: take square root
-            rms = sqrt(16.67) ≈ 4.08
-
-            # step 4: normalize (divide by rms)
-            normalized = [3/4.08, 4/4.08, 5/4.08]
-            normalized ≈ [0.735, 0.980, 1.225]
-
         returns :
-
             normalized tensor of same shape
 
         """
@@ -50,10 +33,6 @@ class RMS_Norm(nn.Module):
 
 
 class Rotary_PositionalEmebedding(nn.Module):
-    """
-    rotary position embedding (rope)
-    """
-
     def __init__(
         self, head_dim: int, max_seq_length: int = 2048, base: float = 10000.0
     ):
@@ -76,38 +55,19 @@ class Rotary_PositionalEmebedding(nn.Module):
 
     def _set_cos_sin_cache(self, seq_length: int):
         """pre-compute cosine and sine values for all positions"""
-        # creating position indices [0, 1, 2, ..., seq_length-1]
         position = torch.arange(seq_length).float()
-
-        # calculating frequencies for each position
-        # outer product: each position × each frequency
         freqs = torch.outer(position, self.inv_freq)
-
-        # duplicating frequencies (for pairs of dimensions)
         emb = torch.cat([freqs, freqs], dim=-1)
-
-        # pre-compute cos and sin for efficiency
         self.register_buffer("cos_cached", emb.cos(), persistent=False)
         self.register_buffer("sin_cached", emb.sin(), persistent=False)
 
     def rotate_half(self, x):
-        """
-        rotate half the hidden dims of the input.
-        this is the core rope operation.
-
-        example: [a, b, c, d] -> [-c, -d, a, b]
-        """
-        # split the last dimension in half
         x1 = x[..., : x.shape[-1] // 2]
         x2 = x[..., x.shape[-1] // 2 :]
-
-        # rotate: swap and negate
         return torch.cat([-x2, x1], dim=-1)
 
     def forward(self, query, key, position_ids=None):
         """
-        appling rotary embeddings to query and key tensors
-
         args:
             query: query tensor (batch, num_heads, seq_len, head_dim)
             key: key tensor (batch, num_heads, seq_len, head_dim)
@@ -178,17 +138,11 @@ class Multi_Head_SelfAttention(nn.Module):
 
         """
 
-        # reshape to (batch_size, seq_len, num_heads, head_dim)
         tensor = tensor.view(batch_size, -1, self.num_heads, self.head_dim)
-
-        # transpose to (batch_size, num_heads, seq_len, head_dim)
-        # this puts heads in the second dimension for parallel processing
-
         return tensor.transpose(1, 2)
 
     def combine_heads(self, tensor, batch_size):
         """
-
         combine heads back to single hidden dimension
 
         transforms from: (batch, num_heads, seq_len, head_dim)
@@ -214,34 +168,18 @@ class Multi_Head_SelfAttention(nn.Module):
 
         batch_size = hidden_state.shape[0]
 
-        # step 1 -> project inputs to query, key, value
         query = self.query_proj(hidden_state)
         key = self.key_proj(hidden_state)
         value = self.value_proj(hidden_state)
-
-        # step 2
         # split into multiple heads (batch, heads, seq_len, head_dim)
         query_layer = self.split_heads(query, batch_size=batch_size)
         key_layer = self.split_heads(key, batch_size=batch_size)
         value_layer = self.split_heads(value, batch_size=batch_size)
-
-        # step 3: apply rotary position embeddings to q and k
-        # this encodes position information directly into the representations
         query_layer, key_layer = self.rope(query_layer, key_layer)
-
-        # step 4: calculate attention scores
-        # Formula: Attention(Q, K, V) = softmax(QK^T / sqrt(d_k)) V
-        # QK^T: (batch, heads, seq_len, head_dim) @ (batch, heads, head_dim, seq_len)
-        # result: (batch, heads, seq_len, seq_len) - attention scores
         attention_scores = torch.matmul(query_layer, key_layer.transpose(-2, -1))
-        # scaling down attention scores (prevents softmax saturation)
         attention_scores = attention_scores / self.scale
 
-        # applying attention mask if provided
-        # masking out padding tokens or future tokens (in decoder)
         if attention_mask is not None:
-            # adding very negative number to masked positions
-            # after softmax, these become ~0
             attention_scores = attention_scores + attention_mask
 
         attention_probs = f.softmax(attention_scores, dim=-1)
@@ -276,7 +214,6 @@ class SwiGLU_Feed_Forward(nn.Module):
 
     def forward(self, hidden_state):
         """
-        Applying SwiGLU Feed Forward transformation
         Args :
             hidden_state : (batch_size, seq_len, embed_dim)
         Returns :
@@ -325,20 +262,16 @@ class TransformerBlock(nn.Module):
         self.dropout_rate = dropout_rate
         self.max_seq_len = max_seq_len
 
-        # Pre-norm initialization
-        # self.attention_rms_norm -> before calculating attention
         self.attention_rms_norm = RMS_Norm(embed_dim=embed_dim)
-        # self.SwiGLU_ffn_rms_norm -> before SwiGLU_ffn
         self.SwiGLU_ffn_rms_norm = RMS_Norm(embed_dim=embed_dim)
 
-        # Attention layer
         self.mhsa = Multi_Head_SelfAttention(
             embed_dim=embed_dim,
             num_heads=num_heads,
             dropout_rate=dropout_rate,
             max_seq_len=max_seq_len,
         )
-        # SwiGLU_ffn layer
+
         self.SwiGLU_ffn = SwiGLU_Feed_Forward(
             embed_dim=embed_dim,
             intermediate_dim=intermediate_dim,
@@ -354,22 +287,14 @@ class TransformerBlock(nn.Module):
             hidden_state : output tensor (batch_size, seq_len, embed_dim)
         """
 
-        # Saving the current hidden state for residual connection
         residual = hidden_state
-        # Applying pre-normalization
         hidden_state = self.attention_rms_norm(hidden_state)
-        # Applying attention
         hidden_state = self.mhsa(hidden_state, attention_mask)
-        # Applying residual connection
         hidden_state = hidden_state + residual
 
-        # Saving the current state for residual connection
         residual = hidden_state
-        # Applying pre-normalization
         hidden_state = self.SwiGLU_ffn_rms_norm(hidden_state)
-        # Feeding through SwiGLU_ffn
         hidden_state = self.SwiGLU_ffn(hidden_state)
-        # Applying residual connection
         hidden_state = hidden_state + residual
 
         return hidden_state
@@ -408,20 +333,14 @@ class Transformer(nn.Module):
 
         self.pad_token_id = self.tokenizer.pad_token_id
 
-        # Converting token ids into dense vectors
-        # Each token gets a learnable vector representation
         self.token_embedding = nn.Embedding(
             num_embeddings=self.tokenizer.vocab_size,
             embedding_dim=embed_dim,
             padding_idx=self.pad_token_id,
         )
 
-        # Embedding dropout for regularization
         self.embedding_dropout = nn.Dropout(dropout_rate)
 
-        # Transformer blocks (main processing layer)
-        # stacking multiple transformer blocks
-        # more blocks -> deeper model -> more capacity to learn complex pattern
         self.transformer_blocks = nn.ModuleList(
             [
                 TransformerBlock(
@@ -435,11 +354,8 @@ class Transformer(nn.Module):
             ]
         )
 
-        # Final Norm (normalize the output before final prediction)
         self.final_norm = RMS_Norm(embed_dim=embed_dim)
 
-        # Output Head
-        # Projecting hidden states back to vocabulary for prediction
         self.output_head = nn.Linear(
             in_features=embed_dim, out_features=self.vocab_size, bias=False
         )
@@ -461,22 +377,16 @@ class Transformer(nn.Module):
 
     def create_attention_mask(self, input_ids):
         """
-        Create attention mask to ignore padding tokens
-
         Args:
             input_ids: Token IDs (batch, seq_len)
 
         Returns:
             Attention mask (batch, 1, 1, seq_len)
         """
-        # Create mask: 1 for real tokens, 0 for padding
         mask = (input_ids != self.pad_token_id).float()
 
-        # Reshape for broadcasting: (batch, 1, 1, seq_len)
         mask = mask.unsqueeze(1).unsqueeze(2)
 
-        # Convert to attention scores format
-        # 0 for attend, large negative for ignore
         attention_mask = (1.0 - mask) * -10000.0
 
         return attention_mask
@@ -484,24 +394,16 @@ class Transformer(nn.Module):
     def forward(self, input_ids, attention_mask=None, return_hidden_states=False):
         if attention_mask is None:
             attention_mask = self.create_attention_mask(input_ids=input_ids)
-        # input ids -> (batch_size, seq_len)
-        hidden_state = self.token_embedding(
-            input_ids
-        )  # hidden_state -> (batch_size, seq_len, embed_dim)
+        hidden_state = self.token_embedding(input_ids)
 
-        # Applying embedding dropout
         hidden_state = self.embedding_dropout(hidden_state)
 
-        # Storing the hidden states
         all_hidden_states = [] if return_hidden_states else None
-        # Passing through transformer blocks
         for idx, block in enumerate(self.transformer_blocks):
             if return_hidden_states:
                 all_hidden_states.append(hidden_state)
-            # Applying transformer block
             hidden_state = block(hidden_state, attention_mask)
 
-        # Applying final normalization
         hidden_state = self.final_norm(hidden_state)
 
         if return_hidden_states:
@@ -524,8 +426,6 @@ class Transformer(nn.Module):
 
         with torch.no_grad():
             for _ in range(max_new_tokens):
-                # if input_ids grows beyong max_seq_len, rope will crash
-                # Therefore trunctation is needed.
                 if input_ids.shape[1] > self.max_seq_len:
                     input_ids = input_ids[:, -self.max_seq_len :]
 
@@ -540,10 +440,8 @@ class Transformer(nn.Module):
                         dim=1, index=top_k_indices, src=top_k_logits
                     )
 
-                # Converting to probabilities
                 probs = f.softmax(logits, dim=-1)
 
-                # Sampling next token
                 next_token = torch.multinomial(input=probs, num_samples=1)
 
                 input_ids = torch.cat([input_ids, next_token], dim=1)
